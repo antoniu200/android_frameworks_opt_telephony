@@ -3662,21 +3662,32 @@ public class ImsPhoneCallTracker extends CallTracker implements ImsPullCall {
     }
 
     public boolean isVolteEnabled() {
-        boolean isRadioTechLte = getImsRegistrationTech()
-                == ImsRegistrationImplBase.REGISTRATION_TECH_LTE;
-        return isRadioTechLte && mMmTelCapabilities.isCapable(
-                MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE);
+        boolean isRadioTechLte = getImsRegistrationTech() == ImsRegistrationImplBase.REGISTRATION_TECH_LTE;
+        boolean isVolteEnabled = isRadioTechLte && mMmTelCapabilities.isCapable(MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE);
+        boolean provisioned = ImsManager.getInstance(mPhone.getContext(), mPhone.getPhoneId()).isVolteProvisionedOnDevice();
+        if (!provisioned && isVolteEnabled) { // Not provisioned, but registered? Carrier probably needs no provisioning.
+            ImsManager.getInstance(mPhone.getContext(), mPhone.getPhoneId()).setVolteProvisioned(true);
+        }
+        return isVolteEnabled;
     }
 
     public boolean isVowifiEnabled() {
-        boolean isRadioTechIwlan = getImsRegistrationTech()
-                == ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN;
-        return isRadioTechIwlan && mMmTelCapabilities.isCapable(
-                MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE);
+        boolean isRadioTechIwlan = getImsRegistrationTech() == ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN;
+        boolean isVowifiEnabled = isRadioTechIwlan && mMmTelCapabilities.isCapable(MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE);
+        boolean provisioned = ImsManager.getInstance(mPhone.getContext(), mPhone.getPhoneId()).isWfcProvisionedOnDevice();
+        if (!provisioned && isVowifiEnabled) { // Not provisioned, but registered? Carrier probably needs no provisioning.
+            ImsManager.getInstance(mPhone.getContext(), mPhone.getPhoneId()).setWfcProvisioned(true);
+        }
+        return isVowifiEnabled;
     }
 
     public boolean isVideoCallEnabled() {
-        return mMmTelCapabilities.isCapable(MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VIDEO);
+        boolean isVideoCallEnabled = mMmTelCapabilities.isCapable(MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VIDEO);
+        boolean provisioned = ImsManager.getInstance(mPhone.getContext(), mPhone.getPhoneId()).isVtProvisionedOnDevice();
+        if (!provisioned && isVideoCallEnabled) { // Not provisioned, but registered? Carrier probably needs no provisioning.
+            ImsManager.getInstance(mPhone.getContext(), mPhone.getPhoneId()).setVtProvisioned(true);
+        }
+        return isVideoCallEnabled;
     }
 
     @Override
