@@ -1660,6 +1660,8 @@ public interface CommandsInterface {
 
     @UnsupportedAppUsage
     void invokeOemRilRequestRaw(byte[] data, Message response);
+    
+    default void invokeSomcRilRequestRaw(byte[] data, Message response) {}
 
     /**
      * Sends carrier specific information to the vendor ril that can be used to

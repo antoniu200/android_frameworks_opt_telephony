@@ -226,6 +226,11 @@ public class DcNetworkAgent extends NetworkAgent {
             return;
         }
 
+        DcTracker dct = mPhone.getDcTracker(mTransportType);
+        if (dct != null) {
+            dct.updateApnProfileForSinglePdn();
+        }
+
         logd("onNetworkUnwanted called. Now tear down the data connection "
                 + mDataConnection.getName());
         mDataConnection.tearDownAll(Phone.REASON_RELEASED_BY_CONNECTIVITY_SERVICE,

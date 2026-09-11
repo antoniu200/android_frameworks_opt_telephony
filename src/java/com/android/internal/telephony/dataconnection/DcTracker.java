@@ -133,6 +133,8 @@ import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -157,6 +159,7 @@ public class DcTracker extends Handler {
     private static final boolean VDBG_STALL = false; // STOPSHIP if true
     private static final boolean RADIO_TESTS = false;
     private static final String NOTIFICATION_TAG = DcTracker.class.getSimpleName();
+    private static final int QCRIL_EVT_SOMC_PROFILE_CHANGE = 0x90011;
 
     @IntDef(value = {
             REQUEST_TYPE_NORMAL,
@@ -2205,20 +2208,30 @@ public class DcTracker extends Handler {
                     return false;
                 }
 
-                // Should not start cleanUp if the setupData is for IMS APN
-                // or retry of same APN(State==RETRYING).
-                if (!apnContext.getApnType().equals(ApnSetting.TYPE_IMS_STRING)
-                        && (apnContext.getState() != DctConstants.State.RETRYING)) {
-                    // Only lower priority calls left.  Disconnect them all in this single PDP case
-                    // so that we can bring up the requested higher priority call (once we receive
-                    // response for deactivate request for the calls we are about to disconnect
-                    if (cleanUpAllConnectionsInternal(true, Phone.REASON_SINGLE_PDN_ARBITRATION)) {
-                        // If any call actually requested to be disconnected, means we can't
-                        // bring up this connection yet as we need to wait for those data calls
-                        // to be disconnected.
-                        if (DBG) log("setupData: Some calls are disconnecting first."
-                                + " Wait and retry");
-                        return false;
+                
+                if (apnContext.getState() != DctConstants.State.RETRYING) {
+                    // SomcHook: prepare the incoming APN before single-PDN arbitration.
+                    for (ApnContext apnCtx : mApnContexts.values()) {
+                        if (!apnCtx.isDisconnected()) {
+                            updateApnProfile(apnContext.getNextApnSetting());
+                            break;
+                        }
+                    }                
+                
+                    // Should not start cleanUp if the setupData is for IMS APN
+                    // or retry of same APN(State==RETRYING).
+                    if (!apnContext.getApnType().equals(ApnSetting.TYPE_IMS_STRING)) {                        
+                        // Only lower priority calls left.  Disconnect them all in this single PDP case
+                        // so that we can bring up the requested higher priority call (once we receive
+                        // response for deactivate request for the calls we are about to disconnect
+                        if (cleanUpAllConnectionsInternal(true, Phone.REASON_SINGLE_PDN_ARBITRATION)) {
+                            // If any call actually requested to be disconnected, means we can't
+                            // bring up this connection yet as we need to wait for those data calls
+                            // to be disconnected.
+                            if (DBG) log("setupData: Some calls are disconnecting first."
+                                    + " Wait and retry");
+                            return false;
+                        }
                     }
                 }
 
@@ -2246,6 +2259,10 @@ public class DcTracker extends Handler {
         apnContext.setDataConnection(dataConnection);
         apnContext.setApnSetting(apnSetting);
         apnContext.setState(DctConstants.State.CONNECTING);
+        
+        if (isRequireUpdateApnProfile(apnContext)) {
+            updateApnProfile(apnSetting);
+        }
 
         Message msg = obtainMessage();
         msg.what = DctConstants.EVENT_DATA_SETUP_COMPLETE;
@@ -2344,6 +2361,7 @@ public class DcTracker extends Handler {
         createAllApnList();
         setDataProfilesAsNeeded();
         setInitialAttachApn();
+        updateApnProfile();
         cleanUpConnectionsOnUpdatedApns(isAnyDataConnected(), Phone.REASON_APN_CHANGED);
 
         // FIXME: See bug 17426028 maybe no conditional is needed.
@@ -2535,6 +2553,7 @@ public class DcTracker extends Handler {
             createAllApnList();
             setDataProfilesAsNeeded();
             setInitialAttachApn();
+            updateApnProfile();
             sortApnContextByPriority();
             cleanUpConnectionsOnUpdatedApns(true, Phone.REASON_CARRIER_CHANGE);
             setupDataOnAllConnectableApns(Phone.REASON_CARRIER_CHANGE, RetryFailures.ALWAYS);
@@ -2873,6 +2892,9 @@ public class DcTracker extends Handler {
 
         apnContext.setEnabled(false);
         if (cleanup) {
+            if (isOnlySingleDcAllowed(getDataRat())) {
+                updateApnProfile();
+            }
             cleanUpConnectionInternal(true, releaseType, apnContext);
         }
 
@@ -5530,6 +5552,141 @@ public class DcTracker extends Handler {
                 .setPersistent(apn.isPersistent())
                 .setPreferred(isPreferred)
                 .build();
+    }
+
+    private static class ProfileItemInfo {
+        final int bufferSize;
+        String item;
+
+        ProfileItemInfo(int bufferSize) {
+            this.bufferSize = bufferSize;
+        }
+    }
+
+    private ApnSetting getFirstWaitingApn(String apnType) {
+        ArrayList<ApnSetting> waitingApns = buildWaitingApns(apnType, getDataRat());
+        if (waitingApns.isEmpty()) {
+            return null;
+        }
+        return waitingApns.get(0);
+    }
+
+    protected void updateApnProfile() {
+        if (mTransportType != AccessNetworkConstants.TRANSPORT_TYPE_WWAN) {
+            return;
+        }
+
+        updateApnProfile(getFirstWaitingApn(ApnSetting.TYPE_DEFAULT_STRING));
+    }
+
+    private void updateApnProfile(ApnSetting apnSetting) {
+        if (mTransportType != AccessNetworkConstants.TRANSPORT_TYPE_WWAN) {
+            return;
+        }
+        
+        if (!mPhone.getIccRecordsLoaded()) {
+            log("updateApnProfile, Record is not yet loaded.");
+            return;
+        }
+
+        if (!isOnlySingleDcAllowed(getDataRat())
+                && apnSetting != null
+                && !apnSetting.canHandleType(ApnSetting.TYPE_DEFAULT)) {
+            log("can not handle default");
+            return;
+        }
+
+        ProfileItemInfo protocol = new ProfileItemInfo(6);
+        ProfileItemInfo roamingProtocol = new ProfileItemInfo(6);
+        ProfileItemInfo apn = new ProfileItemInfo(100);
+        ProfileItemInfo authType = new ProfileItemInfo(1);
+        ProfileItemInfo user = new ProfileItemInfo(128);
+        ProfileItemInfo password = new ProfileItemInfo(128);
+
+        ProfileItemInfo[] infoArray = {
+                protocol,
+                roamingProtocol,
+                apn,
+                authType,
+                user,
+                password
+        };
+
+        boolean isEnableApnSwitch = getCarrierConfig().getBoolean(
+                CarrierConfigManager.KEY_SOMC_ENABLE_APN_SWITCH_BOOL);
+
+        if (isEnableApnSwitch && apnSetting != null) {
+            apn.item = apnSetting.getApnName();
+            protocol.item = ApnSetting.getProtocolStringFromInt(
+                    apnSetting.getProtocol());
+            roamingProtocol.item = ApnSetting.getProtocolStringFromInt(
+                    apnSetting.getRoamingProtocol());
+            authType.item = Integer.toString(apnSetting.getAuthType());
+            user.item = apnSetting.getUser();
+            password.item = apnSetting.getPassword();
+        }
+
+        log("updateApnProfile, apnSetting: " + apnSetting);
+
+        int dataLength = 0;
+        for (ProfileItemInfo info : infoArray) {
+            dataLength += info.bufferSize;
+        }
+
+        byte[] data = new byte[dataLength];
+        Arrays.fill(data, (byte) 0);
+
+        int offset = 0;
+        for (ProfileItemInfo info : infoArray) {
+            int profileItemLength = info.item == null ? 0 : info.item.length();
+
+            if (profileItemLength > info.bufferSize) {
+                profileItemLength = info.bufferSize;
+            }
+
+            if (profileItemLength > 0) {
+                info.item.getBytes(0, profileItemLength, data, offset);
+            }
+
+            offset += info.bufferSize;
+        }
+
+        log("updateApnProfile, data length = " + dataLength);
+
+        byte[] request = new byte[4 + 4 + dataLength];
+        ByteBuffer reqBuffer = ByteBuffer.wrap(request);
+        reqBuffer.order(ByteOrder.nativeOrder());
+        reqBuffer.putInt(QCRIL_EVT_SOMC_PROFILE_CHANGE);
+        reqBuffer.putInt(dataLength);
+        reqBuffer.put(data);
+
+        mPhone.invokeSomcRilRequestRaw(request, null);
+    }
+    
+    protected void updateApnProfileForSinglePdn() {
+        if (isOnlySingleDcAllowed(getDataRat())) {
+            log("updateApnProfileForSinglePdn");
+            updateApnProfile();
+        }
+    }
+    
+    private boolean isRequireUpdateApnProfile(ApnContext apnContext) {
+        if (apnContext == null) {
+            log("isRequireUpdateApnProfile: true: apnContext is null");
+            return true;
+        }
+
+        for (ApnContext apnCtx : mApnContexts.values()) {
+            if (!apnCtx.getApnType().equalsIgnoreCase(apnContext.getApnType())
+                    && (apnCtx.getState() == DctConstants.State.CONNECTED
+                            || apnCtx.getState() == DctConstants.State.CONNECTING)) {
+                log("isRequireUpdateApnProfile: false: apnCtx=" + apnCtx);
+                return false;
+            }
+        }
+
+        log("isRequireUpdateApnProfile: true");
+        return true;
     }
 
     private void onDataServiceBindingChanged(boolean bound) {

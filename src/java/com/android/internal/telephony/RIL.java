@@ -133,6 +133,8 @@ import com.android.internal.telephony.uicc.SimPhonebookRecord;
 import com.android.internal.telephony.util.TelephonyUtils;
 import com.android.telephony.Rlog;
 
+import vendor.somc.hardware.radio.V1_0.ISomcHook;
+
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.FileDescriptor;
@@ -280,6 +282,11 @@ public class RIL extends BaseCommands implements CommandsInterface {
     boolean mIsCellularSupported;
     RadioResponse mRadioResponse;
     RadioIndication mRadioIndication;
+    
+    SomcHookResponse mSomcHookResponse;
+    SomcHookIndication mSomcHookIndication;
+    volatile ISomcHook mSomcHookProxy = null;
+    
     volatile IRadio mRadioProxy = null;
     final AtomicLong mRadioProxyCookie = new AtomicLong(0);
     final RadioProxyDeathRecipient mRadioProxyDeathRecipient;
@@ -301,6 +308,10 @@ public class RIL extends BaseCommands implements CommandsInterface {
     //***** Constants
 
     static final String[] HIDL_SERVICE_NAME = {"slot1", "slot2", "slot3"};
+    
+    static final String[] SOMC_HOOK_SERVICE_NAME = {
+            "somchook", "somchook2", "somchook3"
+    };
 
     static final int IRADIO_GET_SERVICE_DELAY_MILLIS = 4 * 1000;
 
@@ -443,6 +454,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
 
     private synchronized void resetProxyAndRequestList() {
         mRadioProxy = null;
+        mSomcHookProxy = null;
 
         // increment the cookie so that death notification can be ignored
         mRadioProxyCookie.incrementAndGet();
@@ -454,6 +466,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
         clearRequestList(RADIO_NOT_AVAILABLE, false);
 
         getRadioProxy(null);
+        getSomcHookProxy(null);
     }
 
     /** Set a radio HAL fallback compatibility override. */
@@ -473,6 +486,46 @@ public class RIL extends BaseCommands implements CommandsInterface {
     @VisibleForTesting
     public @Nullable HalVersion getCompatVersion(int rilRequest) {
         return mCompatOverrides.getOrDefault(rilRequest, null);
+    }
+    
+    private ISomcHook getSomcHookProxy(Message result) {
+        if (!mIsCellularSupported) {
+            return null;
+        }
+
+        if (mSomcHookProxy != null) {
+            return mSomcHookProxy;
+        }
+
+        try {
+            mSomcHookProxy =
+                    ISomcHook.getService(SOMC_HOOK_SERVICE_NAME[mPhoneId]);
+
+            if (mSomcHookProxy != null) {
+                mSomcHookProxy.setResponseFunctions(
+                        mSomcHookResponse, mSomcHookIndication);
+            } else {
+                riljLoge("getSomcHookProxy: mSomcHookProxy == null");
+            }
+        } catch (RemoteException | RuntimeException e) {
+            mSomcHookProxy = null;
+
+            if (result != null) {
+                AsyncResult.forMessage(result, null,
+                        CommandException.fromRilErrno(RADIO_NOT_AVAILABLE));
+                result.sendToTarget();
+            }
+
+            mRilHandler.sendMessageDelayed(
+                    mRilHandler.obtainMessage(
+                            EVENT_RADIO_PROXY_DEAD,
+                            mRadioProxyCookie.get()),
+                    IRADIO_GET_SERVICE_DELAY_MILLIS);
+
+            riljLoge("getSomcHookProxy", e);
+        }
+
+        return mSomcHookProxy;
     }
 
     /** Returns a {@link IRadio} instance or null if the service is not available. */
@@ -631,6 +684,10 @@ public class RIL extends BaseCommands implements CommandsInterface {
 
         mRadioResponse = new RadioResponse(this);
         mRadioIndication = new RadioIndication(this);
+        
+        mSomcHookResponse = new SomcHookResponse(this);
+        mSomcHookIndication = new SomcHookIndication(this);
+        
         mRilHandler = new RilHandler();
         mRadioProxyDeathRecipient = new RadioProxyDeathRecipient();
 
@@ -654,6 +711,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
         // set radio callback; needed to set RadioIndication callback (should be done after
         // wakelock stuff is initialized above as callbacks are received on separate binder threads)
         getRadioProxy(null);
+        getSomcHookProxy(null);
 
         if (RILJ_LOGD) {
             riljLog("Radio HAL version: " + mRadioVersion);
@@ -3013,6 +3071,33 @@ public class RIL extends BaseCommands implements CommandsInterface {
         }
     }
 
+    @Override
+    public void invokeSomcRilRequestRaw(byte[] data, Message response) {
+        ISomcHook somcHookProxy = getSomcHookProxy(response);
+
+        if (somcHookProxy != null) {
+            RILRequest rr = obtainRequest(
+                    RIL_REQUEST_SOMC_HOOK_RAW,
+                    response,
+                    mRILDefaultWorkSource);
+
+            if (RILJ_LOGD) {
+                riljLog(rr.serialString() + "> "
+                        + requestToString(rr.mRequest)
+                        + "[" + IccUtils.bytesToHexString(data) + "]");
+            }
+
+            try {
+                somcHookProxy.sendSomcRequestRaw(
+                        rr.mSerial,
+                        primitiveArrayToArrayList(data));
+            } catch (RemoteException | RuntimeException e) {
+                handleRadioProxyExceptionForRR(
+                        rr, "invokeSomcRilRequestRaw", e);
+            }
+        }
+    }
+    
     // TODO(b/171260715) Remove when HAL definition is removed
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @Override
@@ -7051,6 +7136,8 @@ public class RIL extends BaseCommands implements CommandsInterface {
                 return "UPDATE_SIM_PHONEBOOK_RECORD";
             case RIL_REQUEST_GET_SIM_PHONEBOOK_CAPACITY:
                 return "GET_SIM_PHONEBOOK_CAPACITY";
+            case RIL_REQUEST_SOMC_HOOK_RAW:
+                return "SOMC_HOOK_RAW";
             default: return "<unknown request>";
         }
     }

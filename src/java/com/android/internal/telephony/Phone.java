@@ -2664,6 +2664,10 @@ public abstract class Phone extends Handler implements PhoneInternalInterface {
     public void invokeOemRilRequestStrings(String[] strings, Message response) {
         mCi.invokeOemRilRequestStrings(strings, response);
     }
+    
+    public void invokeSomcRilRequestRaw(byte[] data, Message response) {
+        mCi.invokeSomcRilRequestRaw(data, response);
+    }
 
     /**
      * Read one of the NV items defined in {@link RadioNVItems} / {@code ril_nv_items.h}.
