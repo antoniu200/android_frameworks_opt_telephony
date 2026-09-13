@@ -105,6 +105,8 @@ public class SmsDispatchersController extends Handler {
 
     /** true if IMS is registered and sms is supported, false otherwise.*/
     private boolean mIms = false;
+    /** true if IMS is registered and ims sms fails, false otherwise.*/
+    private boolean mLegacyImsSmsUnavailableForSession = false;
     private String mImsSmsFormat = SmsConstants.FORMAT_UNKNOWN;
 
     /** 3GPP format sent messages awaiting a delivery status report. */
@@ -124,6 +126,13 @@ public class SmsDispatchersController extends Handler {
             mDeliveryPendingMapFor3GPP2.put(tracker.mMessageRef, tracker);
         } else {
             mDeliveryPendingMapFor3GPP.put(tracker.mMessageRef, tracker);
+        }
+    }
+    
+    void disableLegacyImsSmsForSession() {
+        if (!mLegacyImsSmsUnavailableForSession) {
+            Rlog.d(TAG, "Legacy IMS SMS disabled for current IMS registration session");
+            mLegacyImsSmsUnavailableForSession = true;
         }
     }
 
@@ -201,6 +210,9 @@ public class SmsDispatchersController extends Handler {
 
         switch (msg.what) {
             case EVENT_RADIO_ON:
+                mLegacyImsSmsUnavailableForSession = false;
+                mCi.getImsRegistrationState(this.obtainMessage(EVENT_IMS_STATE_DONE));
+                break;
             case EVENT_IMS_STATE_CHANGED: // received unsol
                 mCi.getImsRegistrationState(this.obtainMessage(EVENT_IMS_STATE_DONE));
                 break;
@@ -369,8 +381,18 @@ public class SmsDispatchersController extends Handler {
 
     private void updateImsInfo(AsyncResult ar) {
         int[] responseArray = (int[]) ar.result;
+        boolean wasIms = mIms;
+               
         setImsSmsFormat(responseArray[1]);
         mIms = responseArray[0] == 1 && !SmsConstants.FORMAT_UNKNOWN.equals(mImsSmsFormat);
+        
+        if (wasIms && !mIms) {
+            if (mLegacyImsSmsUnavailableForSession) {
+                Rlog.d(TAG, "IMS SMS registration ended; clearing legacy IMS SMS suppression");
+            }
+            mLegacyImsSmsUnavailableForSession = false;
+        }
+        
         Rlog.d(TAG, "IMS registration state: " + mIms + " format: " + mImsSmsFormat);
     }
 
@@ -550,7 +572,7 @@ public class SmsDispatchersController extends Handler {
      *         implementation. Otherwise, false.
      */
     public boolean isIms() {
-        return mImsSmsDispatcher.isAvailable() ? true : mIms;
+        return mImsSmsDispatcher.isAvailable() ? true : (mIms && !mLegacyImsSmsUnavailableForSession);
     }
 
     /**

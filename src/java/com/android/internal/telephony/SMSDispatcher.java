@@ -945,10 +945,26 @@ public abstract class SMSDispatcher extends Handler {
                 //       may or may not have the MR corresponding to this
                 //       message, depending on the failure).  Also, in some
                 //       implementations this retry is handled by the baseband.
+                
+                // The first retry after a legacy RIL IMS SMS failure is a fallback
+                // to the non-IMS SMS transport. Do not apply the normal retry delay.
+                boolean firstLegacyImsFallback =
+                        tracker.mImsRetry == 1
+                        && tracker.mRetryCount == 0
+                        && !tracker.mUsesImsServiceForIms;
+                        
                 tracker.mRetryCount++;
                 int errorCode = (smsResponse != null) ? smsResponse.mErrorCode : NO_ERROR_CODE;
                 Message retryMsg = obtainMessage(EVENT_SEND_RETRY, tracker);
-                sendMessageDelayed(retryMsg, SEND_RETRY_DELAY);
+                
+                if (firstLegacyImsFallback) {
+                    mSmsDispatchersController.disableLegacyImsSmsForSession();
+                    Rlog.d(TAG, "Immediate retry for legacy IMS SMS fallback");
+                    sendMessage(retryMsg);
+                } else {
+                    sendMessageDelayed(retryMsg, SEND_RETRY_DELAY);
+                }
+                
                 mPhone.getSmsStats().onOutgoingSms(
                         tracker.mImsRetry > 0 /* isOverIms */,
                         SmsConstants.FORMAT_3GPP2.equals(getFormat()),
