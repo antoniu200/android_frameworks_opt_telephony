@@ -33,6 +33,7 @@ import android.os.Handler;
 import android.os.Message;
 import android.os.Registrant;
 import android.os.RegistrantList;
+import android.os.UEventObserver;
 import android.os.storage.StorageManager;
 import android.preference.PreferenceManager;
 import android.sysprop.TelephonyProperties;
@@ -53,6 +54,9 @@ import com.android.internal.telephony.PhoneFactory;
 import com.android.internal.telephony.RadioConfig;
 import com.android.internal.telephony.SubscriptionInfoUpdater;
 import com.android.internal.telephony.uicc.euicc.EuiccCard;
+import com.android.internal.telephony.uicc.IccCardStatus;
+import com.android.internal.telephony.uicc.UiccController;
+import com.android.internal.telephony.uicc.UiccSlot;
 import com.android.internal.telephony.util.TelephonyUtils;
 import com.android.telephony.Rlog;
 
@@ -192,6 +196,9 @@ public class UiccController extends Handler {
 
     private UiccStateChangedLauncher mLauncher;
     private RadioConfig mRadioConfig;
+    
+    private static final String SONY_SIM_DETECT_MATCH =
+        "DEVPATH=/devices/virtual/switch/sim_detect";
 
     /* The storage for the PIN codes. */
     private final PinStorage mPinStorage;
@@ -211,6 +218,32 @@ public class UiccController extends Handler {
             return mInstance;
         }
     }
+    
+    private final UEventObserver mSonySimDetectObserver = new UEventObserver() {
+        @Override
+        public void onUEvent(UEvent event) {
+            final String state = event.get("SWITCH_STATE");
+
+            if (!"1".equals(state) && !"2".equals(state)) {
+                return;
+            }
+
+            logWithLocalLog("Sony SIM detect: SWITCH_STATE=" + state);
+
+            post(() -> {
+                logWithLocalLog("Sony SIM detect: requesting ICC card status");
+                if ("1".equals(state)) {
+                    logWithLocalLog("Sony SIM detect: powering SIM down");
+                    mCis[0].setSimCardPower(
+                            TelephonyManager.CARD_POWER_DOWN, null, null);
+                } else if ("2".equals(state)) {
+                    logWithLocalLog("Sony SIM detect: powering SIM up");
+                    mCis[0].setSimCardPower(
+                            TelephonyManager.CARD_POWER_UP, null, null);
+                }
+            });
+        }
+    };
 
     private UiccController(Context c) {
         if (DBG) log("Creating UiccController");
@@ -259,6 +292,9 @@ public class UiccController extends Handler {
                 this, EVENT_MULTI_SIM_CONFIG_CHANGED, null);
 
         mPinStorage = new PinStorage(mContext);
+        
+        mSonySimDetectObserver.startObserving(SONY_SIM_DETECT_MATCH);
+        logWithLocalLog("Sony SIM detect observer started");
     }
 
     /**
