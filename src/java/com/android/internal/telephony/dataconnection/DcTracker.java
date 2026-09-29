@@ -5616,12 +5616,21 @@ public class DcTracker extends Handler {
                 CarrierConfigManager.KEY_SOMC_ENABLE_APN_SWITCH_BOOL);
 
         if (isEnableApnSwitch && apnSetting != null) {
+            int apnAuthType = apnSetting.getAuthType();
+            int AUTH_TYPE_UNSPECIFIED = -1;
+            
+            if (apnAuthType == AUTH_TYPE_UNSPECIFIED) {
+                apnAuthType = TextUtils.isEmpty(apnSetting.getUser())
+                        ? ApnSetting.AUTH_TYPE_NONE
+                        : ApnSetting.AUTH_TYPE_PAP_OR_CHAP;
+            }
+            
             apn.item = apnSetting.getApnName();
             protocol.item = ApnSetting.getProtocolStringFromInt(
                     apnSetting.getProtocol());
             roamingProtocol.item = ApnSetting.getProtocolStringFromInt(
                     apnSetting.getRoamingProtocol());
-            authType.item = Integer.toString(apnSetting.getAuthType());
+            authType.item = Integer.toString(apnAuthType);
             user.item = apnSetting.getUser();
             password.item = apnSetting.getPassword();
         }
