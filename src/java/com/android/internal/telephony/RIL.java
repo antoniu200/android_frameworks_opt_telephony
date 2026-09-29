@@ -1856,6 +1856,47 @@ public class RIL extends BaseCommands implements CommandsInterface {
             default: return MvnoType.NONE;
         }
     }
+    
+    // Convert ProfileID to match older Android, as required by Radio 1.X
+    private static int convertToHalDataProfileId10(DataProfile dp) {
+        final int profileId = dp.getProfileId();
+
+        // Preserve explicitly supplied profile IDs.
+        if (profileId != DataProfileId.INVALID) {
+            return profileId;
+        }
+
+        final int apnTypes = dp.getSupportedApnTypesBitmask();
+        final int legacyProfileId;
+
+        // Android no longer supplies the legacy profile ID for ordinary
+        // non-persistent APNs. Reconstruct it for old radio HALs.
+        //
+        // Prefer DEFAULT for mixed default-capable APNs because RIL.java
+        // no longer knows which ApnContext caused the setup request.
+        if ((apnTypes & ApnSetting.TYPE_DEFAULT) != 0
+                || (apnTypes & ApnSetting.TYPE_IA) != 0) {
+            legacyProfileId = DataProfileId.DEFAULT;
+        } else if ((apnTypes & ApnSetting.TYPE_IMS) != 0) {
+            legacyProfileId = DataProfileId.IMS;
+        } else if ((apnTypes & ApnSetting.TYPE_FOTA) != 0) {
+            legacyProfileId = DataProfileId.FOTA;
+        } else if ((apnTypes & ApnSetting.TYPE_CBS) != 0) {
+            legacyProfileId = DataProfileId.CBS;
+        } else if ((apnTypes & ApnSetting.TYPE_DUN) != 0) {
+            legacyProfileId = DataProfileId.TETHERED;
+        } else {
+            legacyProfileId = DataProfileId.DEFAULT;
+        }
+
+        if (RILJ_LOGD) {
+            Rlog.d(RILJ_LOG_TAG, "convertToHalDataProfileId10: "
+                    + profileId + " -> " + legacyProfileId
+                    + ", apnTypes=0x" + Integer.toHexString(apnTypes));
+        }
+
+        return legacyProfileId;
+    }
 
     /**
      * Convert to DataProfileInfo defined in radio/1.0/types.hal
@@ -1867,7 +1908,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
         android.hardware.radio.V1_0.DataProfileInfo dpi =
                 new android.hardware.radio.V1_0.DataProfileInfo();
 
-        dpi.profileId = dp.getProfileId();
+        dpi.profileId = convertToHalDataProfileId10(dp);
         dpi.apn = dp.getApn();
         dpi.protocol = ApnSetting.getProtocolStringFromInt(dp.getProtocolType());
         dpi.roamingProtocol = ApnSetting.getProtocolStringFromInt(dp.getRoamingProtocolType());
